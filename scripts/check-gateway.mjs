@@ -1,0 +1,20 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import ts from 'typescript';
+globalThis.Deno={env:{get:()=>undefined},serve:()=>{}};
+let valid=false,called=0;
+globalThis.__admin={auth:{async getUser(){return {data:{user:valid?{id:'verified-user',email:'verified@example.test',email_confirmed_at:'2026-01-01'}:null},error:valid?null:{}}}}};
+globalThis.__routes={async GET(r){called++;assert.equal(r.headers.get('oai-authenticated-user-id'),'verified-user');assert.equal(r.headers.get('oai-authenticated-user-email'),'verified@example.test');assert.equal(r.headers.get('origin'),null);return Response.json({ok:true})}};
+const source=fs.readFileSync('supabase/functions/course-api/index.ts','utf8').replace("import {admin} from './storage.ts';",'const admin=globalThis.__admin;').replace("import * as course from './course.ts';",'const course=globalThis.__routes;').replace("import * as files from './files.ts';",'const files=globalThis.__routes;');
+const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {handler}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+function req(headers={},method='GET'){return new Request('https://test.supabase.co/functions/v1/course-api/course',{method,headers})}
+assert.equal((await handler(req())).status,401);
+assert.equal((await handler(req({Authorization:'Bearer invalid','oai-authenticated-user-id':'teacher'}))).status,401);
+assert.equal(called,0);
+assert.equal((await handler(req({Origin:'https://evil.example'},'OPTIONS'))).status,403);
+const preflight=await handler(req({Origin:'https://daphnelo.github.io'},'OPTIONS'));assert.equal(preflight.status,204);
+valid=true;
+const response=await handler(req({Origin:'https://daphnelo.github.io',Authorization:'Bearer valid','oai-authenticated-user-id':'attacker','oai-authenticated-user-email':'teacher@example.test'}));
+assert.equal(response.status,200);assert.equal(called,1);assert.equal(response.headers.get('Access-Control-Allow-Origin'),'https://daphnelo.github.io');
+console.log('PASS: missing/invalid token rejected, cross-origin rejected, identity headers overwritten by verified user.');
